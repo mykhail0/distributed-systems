@@ -30,4 +30,11 @@ mod tests {
 
         rx.recv().unwrap();
     }
+
+    #[test]
+    #[timeout(100)]
+    #[should_panic]
+    fn empty_threadpool_cannot_start() {
+        let _pool = Threadpool::new(0);
+    }
 }

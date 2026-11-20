@@ -1,47 +1,68 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread::JoinHandle;
+use std::thread::{JoinHandle, spawn};
 
 type Task = Box<dyn FnOnce() + Send>;
 
-// You can define new types (e.g., structs) if you need.
-// However, they shall not be public (i.e., do not use the `pub` keyword).
+struct State {
+    tasks: VecDeque<Task>,
+    done: bool,
+}
+
+struct Shared {
+    state: Mutex<State>,
+    cond: Condvar,
+}
 
 /// The thread pool.
 pub struct Threadpool {
-    // Add here any fields you need.
-    // We suggest storing handles of the worker threads, submitted tasks,
-    // and an information whether the pool is running or it is to be finished.
+    threads: Vec<JoinHandle<()>>,
+    shared: Arc<Shared>,
 }
 
 impl Threadpool {
     /// Create new thread pool with `workers_count` workers.
     pub fn new(workers_count: usize) -> Self {
-        unimplemented!("Initialize necessary data structures.");
-
+        assert!(workers_count > 0);
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State {
+                tasks: VecDeque::new(),
+                done: false,
+            }),
+            cond: Condvar::new(),
+        });
+        let mut threads = Vec::with_capacity(workers_count);
         for _ in 0..workers_count {
-            unimplemented!("Create the workers.");
+            threads.push(spawn({
+                let shared = Arc::clone(&shared);
+                move || Self::worker_loop(shared)
+            }));
         }
-
-        unimplemented!("Return the new Threadpool.");
+        Self { threads, shared }
     }
 
     /// Submit a new task.
     pub fn submit(&self, task: Task) {
-        unimplemented!("We suggest saving the task, and notifying the worker(s)");
+        {
+            let mut state = self.shared.state.lock().expect("Mutex got poisoned");
+            state.tasks.push_back(task);
+        }
+        self.shared.cond.notify_one();
     }
 
-    // We suggest extracting the implementation of the worker to an associated
-    // function, like this one (however, it is not a part of the public
-    // interface, so you can delete it if you implement it differently):
-    fn worker_loop(/* unimplemented!() */) {
-        unimplemented!("Initialize necessary variables.");
-
+    fn worker_loop(shared: Arc<Shared>) {
         loop {
-            unimplemented!("Wait for a task and then execute it.");
-            unimplemented!(
-                "If there are no tasks, and the thread pool is to be finished, break the loop."
-            );
-            unimplemented!("Be careful with locking! The tasks shall be executed concurrently.");
+            let mut state = shared.state.lock().expect("Mutex got poisoned");
+            while state.tasks.is_empty() && !state.done {
+                state = shared.cond.wait(state).expect("Mutex got poisoned");
+            }
+            if let Some(task) = state.tasks.pop_front() {
+                drop(state);
+                task();
+            } else {
+                // the thread pool is done
+                break;
+            }
         }
     }
 }
@@ -52,7 +73,15 @@ impl Drop for Threadpool {
     /// It waits until all submitted tasks are executed,
     /// and until all threads are joined.
     fn drop(&mut self) {
-        unimplemented!("Notify the workers that the thread pool is to be finished.");
-        unimplemented!("Wait for all threads to be finished.");
+        {
+            let mut state = self.shared.state.lock().expect("Mutex got poisoned");
+            state.done = true;
+        }
+        self.shared.cond.notify_all();
+        for thread in self.threads.drain(..) {
+            if let Err(_err) = thread.join() {
+                eprintln!("Thread panicked");
+            }
+        }
     }
 }
