@@ -44,5 +44,5 @@ fn main() {
     });
 
     target_client.send_msg(b"Hello World!".to_vec());
-    assert!(matches!(target_thread.join(), Ok(_)));
+    assert!(target_thread.join().is_ok());
 }

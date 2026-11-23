@@ -1,25 +1,19 @@
 [package]
 name = "lab-04"
-version = "0.2.0"
-authors = ["Filip Plata <fp371335@students.mimuw.edu.pl>", "Mateusz Banaszek <m.banaszek@mimuw.edu.pl"]
-edition = "2021"
+version = "0.2.1"
+authors = ["Filip Plata <fp371335@students.mimuw.edu.pl>", "Mateusz Banaszek <m.banaszek@mimuw.edu.pl", "Mykhaio Shevchenko <mykhailo.shev@gmail.com>"]
+edition = "2024"
 
 [dependencies]
-hmac = "0.12"
-sha2 = "0.10"
-crossbeam-channel = "0.5"
-rustls = "0.20"
-rustls-pemfile = "1.0"
+hmac = "0.13"
+sha2 = "0.11"
+rustls = "0.23"
+rustls-pemfile = "2.2"
 
 [dev-dependencies]
-ntest = "0.8"
-kolmogorov_smirnov = "1.1"
-rustls = { version = "0.20", features = ["dangerous_configuration"] }
-rustls-pemfile = "1.0"
-aes = "0.8"
-cbc = { version = "0.1", features = ["alloc"] }
-rand = "0.8"
-rsa = "0.7"
+ntest = "0.10"
+crossbeam-channel = "0.5"
+rustls-pemfile = "2.2"
 
 [[bin]]
 name = "lab04"
