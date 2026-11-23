@@ -1,10 +1,10 @@
-// WARNING: Do not modify definitions of public types or function names in this
-// file – your solution will be tested automatically! Implement all missing parts.
-
-use crossbeam_channel::{unbounded, Receiver, Sender};
-use rand::Rng;
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use rand::RngExt;
+use std::collections::HashMap; // Wasn't in the solution template
 use std::thread;
 use std::thread::JoinHandle;
+
+use crate::solution::FibonacciSystemMessage::RegisterModule;
 
 type Num = u64;
 type Ident = u128;
@@ -31,10 +31,16 @@ impl FibonacciModule {
     ) -> Ident {
         // For the sake of simplicity, generate a random number and use it
         // as the module's identifier:
-        let id = rand::thread_rng().gen();
-
-        unimplemented!();
-
+        let id = rand::rng().random();
+        queue
+            .send(RegisterModule(FibonacciModule {
+                num: initial_number,
+                limit,
+                id,
+                other: None,
+                queue: queue.clone(),
+            }))
+            .expect("Don't panic");
         id
     }
 
@@ -44,16 +50,22 @@ impl FibonacciModule {
     pub(crate) fn message(&mut self, idx: usize, num: Num) {
         if idx >= self.limit {
             // The calculation is done.
-            unimplemented!()
+            self.queue
+                .send(FibonacciSystemMessage::Done)
+                .expect("Don't panic");
+            return;
         }
-
-        unimplemented!();
-
+        self.num += num;
         // Put the following `println!()` statement after performing
         // the update of `self.num`:
         println!("Inside {}, value: {}", self.id, self.num);
-
-        unimplemented!()
+        self.queue
+            .send(FibonacciSystemMessage::Message {
+                id: self.other.unwrap(),
+                idx: idx + 1,
+                num: self.num,
+            })
+            .expect("Don't panic");
     }
 
     /// Handle the init-message.
@@ -61,7 +73,16 @@ impl FibonacciModule {
     /// The module finishes its initialization and initiates the calculation
     /// if it is the first to go.
     pub(crate) fn init(&mut self, other: Ident) {
-        unimplemented!()
+        self.other = Some(other);
+        if self.num == 1 {
+            self.queue
+                .send(FibonacciSystemMessage::Message {
+                    id: other,
+                    idx: 1,
+                    num: self.num,
+                })
+                .expect("Don't panic");
+        }
     }
 }
 
@@ -92,11 +113,30 @@ pub(crate) enum FibonacciSystemMessage {
 
 /// Run the executor.
 pub(crate) fn run_executor(rx: Receiver<FibonacciSystemMessage>) -> JoinHandle<()> {
-    unimplemented!();
+    let mut modules = HashMap::new();
 
     thread::spawn(move || {
         while let Ok(msg) = rx.recv() {
-            unimplemented!()
+            match msg {
+                RegisterModule(module) => {
+                    modules.insert(module.id, module);
+                }
+                FibonacciSystemMessage::Init { id, other } => {
+                    modules
+                        .get_mut(&id)
+                        .expect("id of nonexisting module")
+                        .init(other);
+                }
+                FibonacciSystemMessage::Message { id, idx, num } => {
+                    modules
+                        .get_mut(&id)
+                        .expect("id of nonexisting module")
+                        .message(idx, num);
+                }
+                FibonacciSystemMessage::Done => {
+                    break;
+                }
+            }
         }
     })
 }
@@ -115,7 +155,16 @@ pub(crate) fn fib(n: usize) {
     assert_ne!(fib1_id, fib2_id);
 
     // Initialize the modules by sending `Init` messages:
-    unimplemented!();
+    tx.send(FibonacciSystemMessage::Init {
+        id: fib1_id,
+        other: fib2_id,
+    })
+    .expect("Don't panic");
+    tx.send(FibonacciSystemMessage::Init {
+        id: fib2_id,
+        other: fib1_id,
+    })
+    .expect("Don't panic");
 
     // Run the executor:
     run_executor(rx).join().unwrap();
