@@ -18,7 +18,10 @@ struct Tick;
 
 pub struct FailureDetectorModule {
     enabled: bool,
-    // TODO add whatever fields necessary.
+    alive: HashSet<Uuid>,
+    ident: Uuid,
+    socket: Arc<UdpSocket>,
+    addresses: HashMap<Uuid, SocketAddr>,
 }
 
 impl FailureDetectorModule {
@@ -35,7 +38,10 @@ impl FailureDetectorModule {
         let module_ref = system
             .register_module(Self {
                 enabled: true,
-                // TODO initialize the fields you added
+                alive: all_idents,
+                ident,
+                socket: Arc::clone(&socket),
+                addresses: addresses.clone(),
             })
             .await;
 
@@ -52,7 +58,34 @@ impl FailureDetectorModule {
 impl Handler<DetectorOperationUdp> for FailureDetectorModule {
     async fn handle(&mut self, _self_ref: &ModuleRef<Self>, item: DetectorOperationUdp) {
         if self.enabled {
-            unimplemented!();
+            let DetectorOperationUdp(msg, socket) = item;
+
+            match msg {
+                DetectorOperation::HeartbeatRequest => {
+                    self.socket.send_to(
+                        bincode::serialize(
+                            &DetectorOperation::HeartbeatResponse(self.ident)
+                        ).unwrap().as_slice()
+                        , socket)
+                            .await.expect("cannot send?");
+                }
+
+                DetectorOperation::HeartbeatResponse(id) => {
+                    self.alive.insert(id);
+                }
+
+                DetectorOperation::AliveRequest => {
+                    let vec = self.alive.iter().copied().collect();
+                    self.socket.send_to(
+                        bincode::serialize(
+                            &DetectorOperation::AliveInfo(vec)
+                        ).unwrap().as_slice()
+                        , socket)
+                            .await.expect("cannot send?");
+                }
+
+                DetectorOperation::AliveInfo(_) => {}
+            }
         }
     }
 }
@@ -62,7 +95,15 @@ impl Handler<DetectorOperationUdp> for FailureDetectorModule {
 impl Handler<Tick> for FailureDetectorModule {
     async fn handle(&mut self, _self_ref: &ModuleRef<Self>, _msg: Tick) {
         if self.enabled {
-            unimplemented!();
+            for (_, addr) in self.addresses.iter() {
+                self.socket.send_to(
+                    bincode::serialize(
+                        &DetectorOperation::HeartbeatRequest
+                    ).unwrap().as_slice()
+                    , addr
+                    ).await.expect("cannot send?");
+            }
+            self.alive.clear();
         }
     }
 }
