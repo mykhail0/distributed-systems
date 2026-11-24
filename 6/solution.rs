@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use log::debug;
+use postcard::to_allocvec;
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 use uuid::Uuid;
@@ -18,8 +19,9 @@ struct Tick;
 
 pub struct FailureDetectorModule {
     enabled: bool,
-    alive: HashSet<Uuid>,
     ident: Uuid,
+    alive: HashSet<Uuid>,
+    unsuspected: HashSet<Uuid>,
     socket: Arc<UdpSocket>,
     addresses: HashMap<Uuid, SocketAddr>,
 }
@@ -38,8 +40,9 @@ impl FailureDetectorModule {
         let module_ref = system
             .register_module(Self {
                 enabled: true,
-                alive: all_idents,
                 ident,
+                alive: all_idents.clone(),
+                unsuspected: all_idents,
                 socket: Arc::clone(&socket),
                 addresses: addresses.clone(),
             })
@@ -62,12 +65,15 @@ impl Handler<DetectorOperationUdp> for FailureDetectorModule {
 
             match msg {
                 DetectorOperation::HeartbeatRequest => {
-                    self.socket.send_to(
-                        bincode::serialize(
-                            &DetectorOperation::HeartbeatResponse(self.ident)
-                        ).unwrap().as_slice()
-                        , socket)
-                            .await.expect("cannot send?");
+                    self.socket
+                        .send_to(
+                            to_allocvec(&DetectorOperation::HeartbeatResponse(self.ident))
+                                .unwrap()
+                                .as_slice(),
+                            socket,
+                        )
+                        .await
+                        .expect("cannot send");
                 }
 
                 DetectorOperation::HeartbeatResponse(id) => {
@@ -75,13 +81,16 @@ impl Handler<DetectorOperationUdp> for FailureDetectorModule {
                 }
 
                 DetectorOperation::AliveRequest => {
-                    let vec = self.alive.iter().copied().collect();
-                    self.socket.send_to(
-                        bincode::serialize(
-                            &DetectorOperation::AliveInfo(vec)
-                        ).unwrap().as_slice()
-                        , socket)
-                            .await.expect("cannot send?");
+                    let vec = self.unsuspected.iter().copied().collect();
+                    self.socket
+                        .send_to(
+                            to_allocvec(&DetectorOperation::AliveInfo(vec))
+                                .unwrap()
+                                .as_slice(),
+                            socket,
+                        )
+                        .await
+                        .expect("cannot send");
                 }
 
                 DetectorOperation::AliveInfo(_) => {}
@@ -90,18 +99,24 @@ impl Handler<DetectorOperationUdp> for FailureDetectorModule {
     }
 }
 
-/// Called periodically to check send broadcast and update alive processes.
+/// Called periodically to update alive processes.
 #[async_trait::async_trait]
 impl Handler<Tick> for FailureDetectorModule {
     async fn handle(&mut self, _self_ref: &ModuleRef<Self>, _msg: Tick) {
         if self.enabled {
-            for (_, addr) in self.addresses.iter() {
-                self.socket.send_to(
-                    bincode::serialize(
-                        &DetectorOperation::HeartbeatRequest
-                    ).unwrap().as_slice()
-                    , addr
-                    ).await.expect("cannot send?");
+            let request = to_allocvec(&DetectorOperation::HeartbeatRequest).unwrap();
+            for (id, addr) in self.addresses.iter() {
+                if self.alive.contains(id) {
+                    self.unsuspected.insert(*id);
+                } else {
+                    self.unsuspected.remove(id);
+                }
+                // If cannot send then the receiver process failed, but not
+                // changing this because of how `deserialize_and_forward` works.
+                self.socket
+                    .send_to(&request, addr)
+                    .await
+                    .expect("cannot send");
             }
             self.alive.clear();
         }
@@ -125,7 +140,7 @@ async fn deserialize_and_forward(
             buffer.resize(2 * buffer.len(), 0);
         } else {
             socket.recv_from(&mut buffer).await.unwrap();
-            match bincode::deserialize(&buffer) {
+            match postcard::from_bytes(&buffer) {
                 Ok(msg) => module_ref.send(DetectorOperationUdp(msg, sender)).await,
                 Err(err) => {
                     debug!("Invalid format of detector operation ({})!", err);
@@ -137,7 +152,7 @@ async fn deserialize_and_forward(
 
 struct DetectorOperationUdp(DetectorOperation, SocketAddr);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum DetectorOperation {
     /// Request to receive a heartbeat.
     HeartbeatRequest,

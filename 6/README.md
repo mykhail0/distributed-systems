@@ -23,6 +23,6 @@ querying the status,
 * handler for the `Tick` message, which is sent periodically to the module (at
 the `delay` interval).
 
-To serialize requests and responses to raw bytes you shall use the `bincode`
+To serialize requests and responses to raw bytes you shall use the `postcard`
 crate. To run the system you should use the
 [module system](https://github.com/mykhail0/module-system).

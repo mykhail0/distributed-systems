@@ -2,6 +2,7 @@ mod public_test;
 mod solution;
 
 use crate::solution::{DetectorOperation, FailureDetectorModule};
+use postcard::{from_bytes, to_allocvec};
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
@@ -56,7 +57,7 @@ async fn main() {
 
     socket
         .send_to(
-            bincode::serialize(&DetectorOperation::AliveRequest)
+            to_allocvec(&DetectorOperation::AliveRequest)
                 .unwrap()
                 .as_slice(),
             &addr1.1,
@@ -65,16 +66,15 @@ async fn main() {
         .expect("cannot send?");
 
     let len = socket.recv(&mut buf).await.unwrap();
-    let alive_info = unwrap_alive_info(
-        bincode::deserialize(&buf[..len]).expect("Invalid format of alive info!"),
-    );
+    let alive_info =
+        unwrap_alive_info(from_bytes(&buf[..len]).expect("Invalid format of alive info!"));
     println!("Alive according to the first process: {:?}", alive_info);
 
     sleep(delay).await;
 
     socket
         .send_to(
-            bincode::serialize(&DetectorOperation::AliveRequest)
+            to_allocvec(&DetectorOperation::AliveRequest)
                 .unwrap()
                 .as_slice(),
             &addr2.1,
@@ -83,9 +83,8 @@ async fn main() {
         .expect("cannot send?");
 
     let len = socket.recv(&mut buf).await.unwrap();
-    let alive_info = unwrap_alive_info(
-        bincode::deserialize(&buf[..len]).expect("Invalid format of alive info!"),
-    );
+    let alive_info =
+        unwrap_alive_info(from_bytes(&buf[..len]).expect("Invalid format of alive info!"));
     println!("Alive according to the second process: {:?}", alive_info);
 
     system.shutdown().await;
