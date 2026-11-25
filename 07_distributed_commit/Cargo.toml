@@ -1,20 +1,20 @@
 [package]
 name = "lab-07"
-version = "0.2.0"
-authors = ["Wojciech Ciszewski <wc385540@students.mimuw.edu.pl>", "Filip Plata <fp371335@students.mimuw.edu.pl>", "Mateusz Banaszek <m.banaszek@mimuw.edu.pl"]
-edition = "2021"
+version = "0.2.1"
+authors = ["Wojciech Ciszewski <wc385540@students.mimuw.edu.pl>", "Filip Plata <fp371335@students.mimuw.edu.pl>", "Mateusz Banaszek <m.banaszek@mimuw.edu.pl", "Mykhailo Shevchenko <mykhailo.shev@gmail.com>"]
+edition = "2024"
 
 [dependencies]
-uuid = { version = "1.2", features = ["v4"] }
+uuid = { version = "1.29", features = ["v4"] }
 log = "0.4"
-env_logger = "0.10"
-async-channel = "1.8"
+env_logger = "0.11"
+async-channel = "2.5"
 async-trait = "0.1"
 tokio = { version = "1.22", features = ["full"] }
 executor = { path = "../module-system/", package = "module-system" }
 
 [dev-dependencies]
-ntest = "0.9"
+ntest = "0.10"
 
 [[bin]]
 name = "lab07"

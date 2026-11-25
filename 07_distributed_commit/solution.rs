@@ -1,5 +1,6 @@
 use async_channel::Sender;
-use executor::{Handler, ModuleRef};
+use executor::{Handler, Message, ModuleRef};
+use log::error;
 use std::future::Future;
 use std::pin::Pin;
 use uuid::Uuid;
@@ -25,6 +26,15 @@ pub(crate) enum StoreMsgContent {
     Commit,
     /// System-wide abort.
     Abort,
+}
+
+impl From<TwoPhaseResult> for StoreMsgContent {
+    fn from(res: TwoPhaseResult) -> Self {
+        match res {
+            TwoPhaseResult::Ok => Self::Commit,
+            TwoPhaseResult::Abort => Self::Abort,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -80,20 +90,39 @@ pub(crate) struct ProductPrice(pub(crate) Option<u64>);
 /// Message which disables a node. Used for testing.
 pub(crate) struct Disable;
 
+// Transaction's state when there is one in progress.
+struct TransactionState {
+    ok: usize,
+    callback: Box<dyn FnOnce(TwoPhaseResult) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>,
+    // This field is None during the first phase and Some during the second.
+    result: Option<TwoPhaseResult>,
+}
+
 /// CyberStore2047.
 /// This structure serves as TM.
-// Add any fields you need.
-pub(crate) struct CyberStore2047 {}
+pub(crate) struct CyberStore2047 {
+    nodes: Vec<ModuleRef<Node>>,
+    state: Option<TransactionState>,
+}
 
 impl CyberStore2047 {
     pub(crate) fn new(nodes: Vec<ModuleRef<Node>>) -> Self {
-        unimplemented!()
+        Self { nodes, state: None }
+    }
+
+    async fn broadcast<T>(&mut self, msg: T)
+    where
+        Node: Handler<T>,
+        T: Message + Clone,
+    {
+        for node in self.nodes.iter() {
+            node.send(msg.clone()).await;
+        }
     }
 }
 
 /// Node of CyberStore2047.
 /// This structure serves as a process of the distributed system.
-// Add any fields you need.
 pub(crate) struct Node {
     products: Vec<Product>,
     pending_transaction: Option<Transaction>,
@@ -113,24 +142,115 @@ impl Node {
 #[async_trait::async_trait]
 impl Handler<NodeMsg> for CyberStore2047 {
     async fn handle(&mut self, self_ref: &ModuleRef<Self>, msg: NodeMsg) {
-        unimplemented!()
+        if let Some(state) = self.state.as_mut() {
+            match msg.content {
+                NodeMsgContent::RequestVoteResponse(res) if state.result.is_none() => {
+                    let start_second_phase = if let TwoPhaseResult::Ok = res {
+                        state.ok += 1;
+                        state.ok == self.nodes.len()
+                    } else {
+                        true
+                    };
+
+                    if start_second_phase {
+                        state.ok = 0;
+                        state.result = Some(res);
+                        self.broadcast(StoreMsg {
+                            sender: self_ref.clone(),
+                            content: res.into(),
+                        })
+                        .await;
+                    }
+                }
+
+                NodeMsgContent::FinalizationAck if let Some(result) = state.result => {
+                    state.ok += 1;
+                    if state.ok == self.nodes.len() {
+                        let state = self.state.take().unwrap();
+                        (state.callback)(result).await;
+                    }
+                }
+                NodeMsgContent::RequestVoteResponse(_) => {
+                    error!("Receiving `RequestVoteResponse` in the second phase");
+                }
+                NodeMsgContent::FinalizationAck => {
+                    error!("Receiving `FinalizationAck` in the first phase");
+                }
+            }
+        } else {
+            error!("Receiving `NodeMsg` with no transaction in progress");
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl Handler<StoreMsg> for Node {
-    async fn handle(&mut self, self_ref: &ModuleRef<Self>, msg: StoreMsg) {
+    async fn handle(&mut self, _self_ref: &ModuleRef<Self>, msg: StoreMsg) {
         if self.enabled {
-            unimplemented!()
+            msg.sender
+                .send(NodeMsg {
+                    content: match msg.content {
+                        StoreMsgContent::RequestVote(trans) => {
+                            // Assuming perfect links.
+                            assert!(self.pending_transaction.is_none());
+                            let Transaction { pr_type, shift } = trans;
+                            let result = if self.products.iter().any(|p| {
+                                p.pr_type == pr_type
+                                    && p.price
+                                        .checked_add_signed(i64::from(shift))
+                                        .is_none_or(|price| price == 0)
+                            }) {
+                                TwoPhaseResult::Abort
+                            } else {
+                                TwoPhaseResult::Ok
+                            };
+                            if result == TwoPhaseResult::Ok {
+                                self.pending_transaction = Some(trans);
+                            }
+                            NodeMsgContent::RequestVoteResponse(result)
+                        }
+
+                        StoreMsgContent::Commit => {
+                            let transaction = self
+                                .pending_transaction
+                                .take()
+                                .expect("Cannot commit without a transaction");
+                            let shift = i64::from(transaction.shift);
+                            for p in self.products.iter_mut() {
+                                if p.pr_type == transaction.pr_type {
+                                    p.price = p
+                                        .price
+                                        .checked_add_signed(shift)
+                                        .expect("Validated in `RequestVote`");
+                                }
+                            }
+                            NodeMsgContent::FinalizationAck
+                        }
+
+                        StoreMsgContent::Abort => {
+                            self.pending_transaction.take();
+                            NodeMsgContent::FinalizationAck
+                        }
+                    },
+                })
+                .await;
         }
     }
 }
 
 #[async_trait::async_trait]
 impl Handler<ProductPriceQuery> for Node {
-    async fn handle(&mut self, self_ref: &ModuleRef<Self>, msg: ProductPriceQuery) {
+    async fn handle(&mut self, _self_ref: &ModuleRef<Self>, msg: ProductPriceQuery) {
         if self.enabled {
-            unimplemented!()
+            let _ = msg
+                .result_sender
+                .send(ProductPrice(
+                    self.products
+                        .iter()
+                        .find(|p| p.identifier == msg.product_ident)
+                        .map(|p| p.price),
+                ))
+                .await;
         }
     }
 }
@@ -145,6 +265,25 @@ impl Handler<Disable> for Node {
 #[async_trait::async_trait]
 impl Handler<TransactionMessage> for CyberStore2047 {
     async fn handle(&mut self, self_ref: &ModuleRef<Self>, msg: TransactionMessage) {
-        unimplemented!()
+        // There shall be only one transaction at a time.
+        assert!(self.state.is_none());
+        let TransactionMessage {
+            transaction,
+            completed_callback,
+        } = msg;
+        if self.nodes.is_empty() {
+            completed_callback(TwoPhaseResult::Ok).await;
+        } else {
+            self.state = Some(TransactionState {
+                ok: 0,
+                callback: completed_callback,
+                result: None,
+            });
+            self.broadcast(StoreMsg {
+                sender: self_ref.clone(),
+                content: StoreMsgContent::RequestVote(transaction),
+            })
+            .await;
+        }
     }
 }
